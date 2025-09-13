@@ -22,24 +22,26 @@ class TabularDataset(Dataset):
     def __init__(self, train=True):
         base = pd.read_csv('./data/adult.csv')
         base = base.sample(frac=1, random_state=0).reset_index(drop=True)
+        # drop rows with missing placeholders
         base = base[(base == '?').sum(axis=1) == 0]
         
+        # Match Kaggle adult.csv header names (dot-separated, and 'sex' instead of 'gender')
         self.continuous = [
             'age', # target variable
-            'educational-num',
-            'capital-gain', 
-            'capital-loss', 
-            'hours-per-week',
+            'education.num',
+            'capital.gain', 
+            'capital.loss', 
+            'hours.per.week',
         ]
         self.discrete = [
             'workclass',
             'education',
-            'marital-status',
+            'marital.status',
             'occupation',
             'relationship',
             'race',
-            'gender',
-            'native-country',
+            'sex',
+            'native.country',
             'income', # target variable
         ]
         self.integer = self.continuous
@@ -64,7 +66,8 @@ class TabularDataset(Dataset):
             df_dummy.append(pd.get_dummies(base[d], prefix=d))
         base_dummy = pd.concat([base.drop(columns=self.discrete)] + df_dummy, axis=1)
         
-        split_num = 40000
+        # Use an 80/20 split to accommodate datasets after cleaning
+        split_num = int(len(base) * 0.8)
         
         if train:
             self.train_raw = base.iloc[:split_num]
@@ -78,7 +81,7 @@ class TabularDataset(Dataset):
             df[self.continuous] /= self.std
             
             self.train = df
-            self.x_data = df.to_numpy()
+            self.x_data = df.to_numpy().astype(np.float32)
         else:
             self.train_raw = base.iloc[:split_num]
             self.test_raw = base.iloc[split_num:]
@@ -93,7 +96,7 @@ class TabularDataset(Dataset):
             df[self.continuous] /= self.std
             
             self.test = df
-            self.x_data = df.to_numpy()
+            self.x_data = df.to_numpy().astype(np.float32)
         
         # Output Information
         self.OutputInfo_list = []

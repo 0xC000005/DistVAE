@@ -79,7 +79,7 @@ class TabularDataset(Dataset):
             df[self.continuous] /= self.std
             
             self.train = df
-            self.x_data = df.to_numpy()
+            self.x_data = df.to_numpy().astype(np.float32)
         else:
             self.train_raw = base.iloc[:split_num]
             self.test_raw = base.iloc[split_num:]
@@ -94,7 +94,7 @@ class TabularDataset(Dataset):
             df[self.continuous] /= self.std
             
             self.test = df
-            self.x_data = df.to_numpy()
+            self.x_data = df.to_numpy().astype(np.float32)
         
         # Output Information
         self.OutputInfo_list = []

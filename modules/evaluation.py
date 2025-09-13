@@ -29,6 +29,12 @@ def regression_eval(train, test, target, mean, std):
     
     covariates = [x for x in train.columns if x not in [target]]
     
+    # Ensure numeric dtype
+    X_train = train[covariates].astype(float)
+    y_train = train[target].astype(float)
+    X_test = test[covariates].astype(float)
+    y_test = test[target].astype(float)
+    
     result = []
     for name, regr in [
         ('linear', None), 
@@ -37,14 +43,15 @@ def regression_eval(train, test, target, mean, std):
         ('GradBoost', GradientBoostingRegressor(random_state=0))]:
         
         if name == 'linear':
-            regr = sm.OLS(train[target], train[covariates]).fit()
+            regr = sm.OLS(y_train, X_train).fit()
+            pred = regr.predict(X_test)
         else:
-            regr.fit(train[covariates], train[target])
-        pred = regr.predict(test[covariates])
+            regr.fit(X_train, y_train)
+            pred = regr.predict(X_test)
         
-        mare = (test[target] - pred).abs()
-        mare /= test[target].abs() + 1e-6
-        mare = mare.mean()
+        mare = (y_test - pred).abs()
+        mare /= y_test.abs() + 1e-6
+        mare = float(mare.mean())
         
         result.append((name, mare))
         print("[{}] MARE: {:.3f}".format(name, mare))

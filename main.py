@@ -21,21 +21,7 @@ from modules.model import VAE
 from modules.train import train_VAE
 #%%
 import sys
-import subprocess
-try:
-    import wandb
-except:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "wandb"])
-    with open("./wandb_api.txt", "r") as f:
-        key = f.readlines()
-    subprocess.run(["wandb", "login"], input=key[0], encoding='utf-8')
-    import wandb
-
-run = wandb.init(
-    project="DistVAE", # put your WANDB project name
-    entity="anseunghwan", # put your WANDB username
-    tags=['DistVAE'], # put tags of this python project
-)
+import json
 #%%
 import argparse
 import ast
@@ -70,6 +56,8 @@ def get_args(debug):
     
     parser.add_argument('--beta', default=0.5, type=float,
                         help='scale parameter of asymmetric Laplace distribution')
+    parser.add_argument('--wandb', default='off', choices=['on','off'],
+                        help='use Weights & Biases logging and artifacts')
   
     if debug:
         return parser.parse_args(args=[])
@@ -81,7 +69,26 @@ def main():
     config = vars(get_args(debug=False)) # default configuration
     config["cuda"] = torch.cuda.is_available()
     device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
-    wandb.config.update(config)
+    use_wandb = (config.get('wandb','off') == 'on')
+    if use_wandb:
+        import subprocess
+        try:
+            import wandb
+        except Exception:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "wandb"])
+            try:
+                with open("./wandb_api.txt", "r") as f:
+                    key = f.readlines()
+                subprocess.run(["wandb", "login"], input=key[0], encoding='utf-8')
+            except Exception:
+                pass
+            import wandb
+        run = wandb.init(
+            project="DistVAE",
+            entity="anseunghwan",
+            tags=['DistVAE'],
+        )
+        wandb.config.update(config)
     
     set_random_seed(config["seed"])
     torch.manual_seed(config["seed"])
@@ -118,23 +125,28 @@ def main():
         print(print_input)
         
         """update log"""
-        wandb.log({x : np.mean(y) for x, y in logs.items()})
+        if use_wandb:
+            wandb.log({x : np.mean(y) for x, y in logs.items()})
     #%%
     """model save"""
-    torch.save(model.state_dict(), './assets/DistVAE_{}.pth'.format(config["dataset"]))
-    artifact = wandb.Artifact('beta{}_{}'.format(config["beta"], config["dataset"]), 
-                            type='model',
-                            metadata=config) # description=""
-    # artifact = wandb.Artifact('DistVAE_{}'.format(config["dataset"]), 
-    #                         type='model',
-    #                         metadata=config) # description=""
-    artifact.add_file('./assets/DistVAE_{}.pth'.format(config["dataset"]))
-    artifact.add_file('./main.py')
-    artifact.add_file('./modules/model.py')
-    wandb.log_artifact(artifact)
-    #%%    
-    wandb.config.update(config, allow_val_change=True)
-    wandb.run.finish()
+    # save local model and config
+    os.makedirs('./assets', exist_ok=True)
+    model_path = './assets/DistVAE_{}.pth'.format(config["dataset"])
+    torch.save(model.state_dict(), model_path)
+    with open('./assets/DistVAE_{}.json'.format(config["dataset"]), 'w') as f:
+        json.dump(config, f, indent=2)
+
+    # optionally log to W&B
+    if use_wandb:
+        artifact = wandb.Artifact('beta{}_{}'.format(config["beta"], config["dataset"]), 
+                                type='model',
+                                metadata=config)
+        artifact.add_file(model_path)
+        artifact.add_file('./main.py')
+        artifact.add_file('./modules/model.py')
+        wandb.log_artifact(artifact)
+        wandb.config.update(config, allow_val_change=True)
+        wandb.run.finish()
 #%%
 if __name__ == '__main__':
     main()

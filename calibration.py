@@ -24,21 +24,11 @@ from modules.model import VAE
 from statsmodels.distributions.empirical_distribution import ECDF
 #%%
 import sys
-import subprocess
+import json
 try:
     import wandb
-except:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "wandb"])
-    with open("../wandb_api.txt", "r") as f:
-        key = f.readlines()
-    subprocess.run(["wandb", "login"], input=key[0], encoding='utf-8')
-    import wandb
-
-run = wandb.init(
-    project="DistVAE", # put your WANDB project name
-    entity="anseunghwan", # put your WANDB username
-    tags=['DistVAE', 'Calibration'], # put tags of this python project
-)
+except Exception:
+    wandb = None
 #%%
 import argparse
 def get_args(debug):
@@ -48,6 +38,12 @@ def get_args(debug):
                         help='model version')
     parser.add_argument('--dataset', type=str, default='adult', 
                         help='Dataset options: supports only adult!')
+    parser.add_argument('--wandb', default='off', choices=['on','off'],
+                        help='use Weights & Biases artifacts/logs')
+    parser.add_argument('--model_path', default=None, type=str,
+                        help='path to local model .pth (if wandb off)')
+    parser.add_argument('--config_path', default=None, type=str,
+                        help='path to local config .json (if wandb off)')
 
     if debug:
         return parser.parse_args(args=[])
@@ -58,21 +54,38 @@ def main():
     #%%
     config = vars(get_args(debug=True)) # default configuration
     
-    """model load"""
-    artifact = wandb.use_artifact('anseunghwan/DistVAE/beta0.5_DistVAE_{}:v{}'.format(
-        config["dataset"], config["num"]), type='model')
-    # artifact = wandb.use_artifact('anseunghwan/DistVAE/DistVAE_{}:v{}'.format(
-    #     config["dataset"], config["num"]), type='model')
-    for key, item in artifact.metadata.items():
-        config[key] = item
-    model_dir = artifact.download()
+    use_wandb = (config.get('wandb','off') == 'on' and (wandb is not None))
+    if use_wandb:
+        run = wandb.init(
+            project="DistVAE",
+            entity="anseunghwan",
+            tags=['DistVAE', 'Calibration'],
+        )
+        wandb.config.update(config)
+
+    if use_wandb:
+        artifact = wandb.use_artifact('anseunghwan/DistVAE/beta0.5_DistVAE_{}:v{}'.format(
+            config["dataset"], config["num"]), type='model')
+        for key, item in artifact.metadata.items():
+            config[key] = item
+        model_dir = artifact.download()
+        model_path = [x for x in os.listdir(model_dir) if x.endswith('pth')][0]
+        model_path = model_dir + '/' + model_path
+    else:
+        model_path = config.get('model_path') or './assets/DistVAE_{}.pth'.format(config['dataset'])
+        cfg_path = config.get('config_path') or './assets/DistVAE_{}.json'.format(config['dataset'])
+        if os.path.exists(cfg_path):
+            with open(cfg_path, 'r') as f:
+                cfg_loaded = json.load(f)
+            config.update(cfg_loaded)
     
     if not os.path.exists('./assets/{}'.format(config["dataset"])):
         os.makedirs('./assets/{}'.format(config["dataset"]))
     
     config["cuda"] = torch.cuda.is_available()
     device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
-    wandb.config.update(config)
+    if use_wandb:
+        wandb.config.update(config)
     
     set_random_seed(config["seed"])
     torch.manual_seed(config["seed"])
@@ -94,15 +107,9 @@ def main():
     #%%
     model = VAE(config, device).to(device)
     if config["cuda"]:
-        model_name = [x for x in os.listdir(model_dir) if x.endswith('pth')][0]
-        model.load_state_dict(
-            torch.load(
-                model_dir + '/' + model_name))
+        model.load_state_dict(torch.load(model_path))
     else:
-        model_name = [x for x in os.listdir(model_dir) if x.endswith('pth')][0]
-        model.load_state_dict(
-            torch.load(
-                model_dir + '/' + model_name, map_location=torch.device('cpu')))
+        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
     
     model.eval()
     #%%
@@ -189,9 +196,9 @@ def main():
     plt.savefig('./assets/{}/{}_CDF_calibration.png'.format(config["dataset"], config["dataset"]))
     plt.show()
     plt.close()
-    wandb.log({'CDF calibration': wandb.Image(fig)})
-    #%%
-    wandb.run.finish()
+    if use_wandb and wandb is not None:
+        wandb.log({'CDF calibration': wandb.Image(fig)})
+        wandb.run.finish()
 #%%
 if __name__ == '__main__':
     main()

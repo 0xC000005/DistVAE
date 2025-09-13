@@ -25,24 +25,19 @@ from modules.evaluation import (
     DCR_metric,
     attribute_disclosure
 )
-from dython.nominal import associations
+try:
+    from dython.nominal import associations
+    _HAS_DYTHON = True
+except Exception:
+    _HAS_DYTHON = False
 #%%
 import sys
-import subprocess
+import json
+_use_wandb = False
 try:
-    import wandb
-except:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "wandb"])
-    with open("../wandb_api.txt", "r") as f:
-        key = f.readlines()
-    subprocess.run(["wandb", "login"], input=key[0], encoding='utf-8')
-    import wandb
-
-run = wandb.init(
-    project="DistVAE", # put your WANDB project name
-    entity="anseunghwan", # put your WANDB username
-    tags=['DistVAE', 'Synthetic'], # put tags of this python project
-)
+    import wandb  # optional
+except Exception:
+    wandb = None
 #%%
 import argparse
 def get_args(debug):
@@ -54,6 +49,12 @@ def get_args(debug):
                         help='Dataset options: covtype, credit, loan, adult, cabs, kings')
     parser.add_argument('--beta', default=0.5, type=float,
                         help='observation noise')
+    parser.add_argument('--wandb', default='off', choices=['on','off'],
+                        help='use Weights & Biases artifacts/logs')
+    parser.add_argument('--model_path', default=None, type=str,
+                        help='path to local model .pth (if wandb off)')
+    parser.add_argument('--config_path', default=None, type=str,
+                        help='path to local config .json (if wandb off)')
 
     if debug:
         return parser.parse_args(args=[])
@@ -64,21 +65,44 @@ def main():
     #%%
     config = vars(get_args(debug=False)) # default configuration
     
-    """model load"""
-    artifact = wandb.use_artifact('anseunghwan/DistVAE/beta{:.1f}_DistVAE_{}:v{}'.format(
-        config["beta"], config["dataset"], config["num"]), type='model')
-    # artifact = wandb.use_artifact('anseunghwan/DistVAE/DistVAE_{}:v{}'.format(
-    #     config["dataset"], config["num"]), type='model')
-    for key, item in artifact.metadata.items():
-        config[key] = item
-    model_dir = artifact.download()
+    # Optional W&B
+    _use_wandb = (config.get('wandb', 'off') == 'on' and (wandb is not None))
+    if _use_wandb:
+        run = wandb.init(
+            project="DistVAE",
+            entity="anseunghwan",
+            tags=['DistVAE', 'Synthetic'],
+        )
+        wandb.config.update(config)
+    
+    # Model/config loading
+    if _use_wandb:
+        artifact = wandb.use_artifact('anseunghwan/DistVAE/beta{:.1f}_DistVAE_{}:v{}'.format(
+            config["beta"], config["dataset"], config["num"]), type='model')
+        for key, item in artifact.metadata.items():
+            config[key] = item
+        model_dir = artifact.download()
+        model_path = [x for x in os.listdir(model_dir) if x.endswith('pth')][0]
+        model_path = model_dir + '/' + model_path
+    else:
+        if config.get('model_path') is None:
+            model_path = './assets/DistVAE_{}.pth'.format(config["dataset"])
+        else:
+            model_path = config['model_path']
+        # Load config JSON
+        cfg_path = config.get('config_path') or './assets/DistVAE_{}.json'.format(config['dataset'])
+        if os.path.exists(cfg_path):
+            with open(cfg_path, 'r') as f:
+                cfg_loaded = json.load(f)
+            config.update({k: v for k, v in cfg_loaded.items()})
     
     if not os.path.exists('./assets/{}'.format(config["dataset"])):
         os.makedirs('./assets/{}'.format(config["dataset"]))
     
     config["cuda"] = torch.cuda.is_available()
     device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
-    wandb.config.update(config)
+    if _use_wandb:
+        wandb.config.update(config)
     
     set_random_seed(config["seed"])
     torch.manual_seed(config["seed"])
@@ -100,15 +124,9 @@ def main():
     #%%
     model = VAE(config, device).to(device)
     if config["cuda"]:
-        model_name = [x for x in os.listdir(model_dir) if x.endswith('pth')][0]
-        model.load_state_dict(
-            torch.load(
-                model_dir + '/' + model_name))
+        model.load_state_dict(torch.load(model_path))
     else:
-        model_name = [x for x in os.listdir(model_dir) if x.endswith('pth')][0]
-        model.load_state_dict(
-            torch.load(
-                model_dir + '/' + model_name, map_location=torch.device('cpu')))
+        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
     
     model.eval()
     #%%
@@ -116,22 +134,35 @@ def main():
     count_parameters = lambda model: sum(p.numel() for p in model.parameters() if p.requires_grad)
     num_params = count_parameters(model)
     print("Number of Parameters:", num_params)
-    wandb.log({'Number of Parameters': num_params})
+    if _use_wandb and (wandb is not None):
+        wandb.log({'Number of Parameters': num_params})
     #%%
     """Synthetic Data Generation"""
     n = len(dataset.train)
     syndata = model.generate_data(n, OutputInfo_list, dataset)
     #%%
     """Correlation Structure"""
-    syn_asso = associations(
-        syndata, nominal_columns=dataset.discrete,
-        compute_only=True)
-    true_asso = associations(
-        dataset.train_raw, nominal_columns=dataset.discrete,
-        compute_only=True)
-    corr_dist = np.linalg.norm(true_asso["corr"] - syn_asso["corr"])
+    if _HAS_DYTHON:
+        syn_asso = associations(
+            syndata, nominal_columns=dataset.discrete,
+            compute_only=True)
+        true_asso = associations(
+            dataset.train_raw, nominal_columns=dataset.discrete,
+            compute_only=True)
+        corr_dist = np.linalg.norm(true_asso["corr"] - syn_asso["corr"]) 
+    else:
+        # Fallback: use Pearson on one-hot encoded discrete columns
+        def corr_mat(df):
+            tmp = df.copy()
+            dummies = []
+            for d in dataset.discrete:
+                dummies.append(pd.get_dummies(tmp[d], prefix=d).astype(float))
+            tmp = pd.concat([tmp.drop(columns=dataset.discrete)] + dummies, axis=1)
+            return tmp.corr().to_numpy()
+        corr_dist = np.linalg.norm(corr_mat(dataset.train_raw) - corr_mat(syndata))
     print('Corr Dist: {:.3f}'.format(corr_dist))
-    wandb.log({'Corr Dist': corr_dist})
+    if _use_wandb and (wandb is not None):
+        wandb.log({'Corr Dist': corr_dist})
     #%%
     print("\nStatistical Similarity...\n")
     Dn, W1 = statistical_similarity(
@@ -146,10 +177,11 @@ def main():
     print('1-WD (continuous): {:.3f}'.format(cont_W1))
     print('K-S (discrete): {:.3f}'.format(disc_Dn))
     print('1-WD (discrete): {:.3f}'.format(disc_W1))
-    wandb.log({'K-S (continuous)': cont_Dn})
-    wandb.log({'1-WD (continuous)': cont_W1})
-    wandb.log({'K-S (discrete)': disc_Dn})
-    wandb.log({'1-WD (discrete)': disc_W1})
+    if _use_wandb:
+        wandb.log({'K-S (continuous)': cont_Dn})
+        wandb.log({'1-WD (continuous)': cont_W1})
+        wandb.log({'K-S (discrete)': disc_Dn})
+        wandb.log({'1-WD (discrete)': disc_W1})
     #%%
     print("\nDistance to Closest Record...\n")
     # standardization of synthetic data
@@ -164,9 +196,10 @@ def main():
     print('DCR (R&S): {:.3f}'.format(DCR[0]))
     print('DCR (R): {:.3f}'.format(DCR[1]))
     print('DCR (S): {:.3f}'.format(DCR[2]))
-    wandb.log({'DCR (R&S)': DCR[0]})
-    wandb.log({'DCR (R)': DCR[1]})
-    wandb.log({'DCR (S)': DCR[2]})
+    if _use_wandb:
+        wandb.log({'DCR (R&S)': DCR[0]})
+        wandb.log({'DCR (R)': DCR[1]})
+        wandb.log({'DCR (S)': DCR[2]})
     #%%
     print("\nAttribute Disclosure...\n")
     compromised_idx = np.random.choice(
@@ -186,7 +219,8 @@ def main():
         acc, f1 = attribute_disclosure(
             K, compromised, syndata_, attr_compromised, dataset)
         print(f'AD F1 (S={attr_num},K={K}): {f1:.3f}')
-        wandb.log({f'AD F1 (S={attr_num},K={K})': f1})
+        if _use_wandb:
+            wandb.log({f'AD F1 (S={attr_num},K={K})': f1})
         # print(f'AD Accuracy (S={attr_num},K={K}): {acc:.3f}')
         # wandb.log({f'AD Accuracy (S={attr_num},K={K})': acc})
     #%%
@@ -194,7 +228,8 @@ def main():
     base_reg = regression_eval(
         dataset.train.copy(), test_dataset.test.copy(), dataset.RegTarget, 
         dataset.mean[dataset.RegTarget], dataset.std[dataset.RegTarget])
-    wandb.log({'MARE (Baseline)': np.mean([x[1] for x in base_reg])})
+    if _use_wandb:
+        wandb.log({'MARE (Baseline)': np.mean([x[1] for x in base_reg])})
     #%%
     print("\nSynthetic: Machine Learning Utility in Regression...\n")
     df_dummy = []
@@ -204,19 +239,21 @@ def main():
     reg = regression_eval(
         syndata_.copy(), test_dataset.test.copy(), dataset.RegTarget, 
         syndata.mean()[dataset.RegTarget], syndata.std()[dataset.RegTarget])
-    wandb.log({'MARE': np.mean([x[1] for x in reg])})
+    if _use_wandb:
+        wandb.log({'MARE': np.mean([x[1] for x in reg])})
     #%%
     print("\nBaseline: Machine Learning Utility in Classification...\n")
     base_clf = classification_eval(
         dataset.train.copy(), test_dataset.test.copy(), dataset.ClfTarget)
-    wandb.log({'F1 (Baseline)': np.mean([x[1] for x in base_clf])})
+    if _use_wandb:
+        wandb.log({'F1 (Baseline)': np.mean([x[1] for x in base_clf])})
     #%%
     print("\nSynthetic: Machine Learning Utility in Classification...\n")
     clf = classification_eval(
         syndata_.copy(), test_dataset.test.copy(), dataset.ClfTarget)
-    wandb.log({'F1': np.mean([x[1] for x in clf])})
-    #%%
-    wandb.run.finish()
+    if _use_wandb:
+        wandb.log({'F1': np.mean([x[1] for x in clf])})
+        wandb.run.finish()
 #%%
 if __name__ == '__main__':
     main()

@@ -94,7 +94,7 @@ class VAE(nn.Module):
         return z, mean, logvar, gamma, beta, logit
     
     def gumbel_sampling(self, size, eps = 1e-20):
-        U = torch.rand(size)
+        U = torch.rand(size).to(self.device)
         G = (- (U + eps).log() + eps).log()
         return G
     
@@ -104,14 +104,14 @@ class VAE(nn.Module):
         
         with torch.no_grad():
             for _ in range(steps):
-                randn = torch.randn(self.config["batch_size"], self.config["latent_dim"]) # prior
+                randn = torch.randn(self.config["batch_size"], self.config["latent_dim"]).to(self.device)  # prior
                 gamma, beta, logit = self.quantile_parameter(randn)
                 
                 samples = []
                 st = 0
                 for j, info in enumerate(OutputInfo_list):
                     if info.activation_fn == "CRPS":
-                        alpha = torch.rand(self.config["batch_size"], 1)
+                        alpha = torch.rand(self.config["batch_size"], 1).to(self.device)
                         samples.append(self.quantile_function(alpha, gamma, beta, j))
                         
                     elif info.activation_fn == "softmax":
@@ -130,7 +130,7 @@ class VAE(nn.Module):
                 data.append(samples)
         data = torch.cat(data, dim=0)
         data = data[:n, :]
-        data = pd.DataFrame(data.numpy(), columns=dataset.continuous + dataset.discrete)
+        data = pd.DataFrame(data.cpu().numpy(), columns=dataset.continuous + dataset.discrete)
         
         """un-standardization of synthetic data"""
         data[dataset.continuous] = data[dataset.continuous] * dataset.std + dataset.mean

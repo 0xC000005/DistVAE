@@ -64,14 +64,23 @@ def main():
     #%%
     config = vars(get_args(debug=False)) # default configuration
     
-    """model load"""
-    artifact = wandb.use_artifact('anseunghwan/DistVAE/beta{:.1f}_DistVAE_{}:v{}'.format(
-        config["beta"], config["dataset"], config["num"]), type='model')
-    # artifact = wandb.use_artifact('anseunghwan/DistVAE/DistVAE_{}:v{}'.format(
-    #     config["dataset"], config["num"]), type='model')
-    for key, item in artifact.metadata.items():
-        config[key] = item
-    model_dir = artifact.download()
+    """model load - use local model instead of WandB artifact"""
+    # Check if local model exists
+    local_model_path = './assets/DistVAE_{}.pth'.format(config["dataset"])
+    if not os.path.exists(local_model_path):
+        raise FileNotFoundError(f"Local model not found at {local_model_path}. Please train the model first using main.py")
+
+    # Set default config values that would normally come from WandB metadata
+    config.update({
+        "seed": 1,
+        "latent_dim": 2,
+        "step": 0.1,
+        "epochs": 100,
+        "batch_size": 256,
+        "lr": 1e-3,
+        "threshold": 1e-5,
+    })
+    model_dir = './assets'
     
     if not os.path.exists('./assets/{}'.format(config["dataset"])):
         os.makedirs('./assets/{}'.format(config["dataset"]))
@@ -99,16 +108,13 @@ def main():
     config["softmax_dim"] = softmax_dim
     #%%
     model = VAE(config, device).to(device)
+    # Load the specific model file for this dataset
+    model_name = f'DistVAE_{config["dataset"]}.pth'
+    model_path = os.path.join(model_dir, model_name)
     if config["cuda"]:
-        model_name = [x for x in os.listdir(model_dir) if x.endswith('pth')][0]
-        model.load_state_dict(
-            torch.load(
-                model_dir + '/' + model_name))
+        model.load_state_dict(torch.load(model_path))
     else:
-        model_name = [x for x in os.listdir(model_dir) if x.endswith('pth')][0]
-        model.load_state_dict(
-            torch.load(
-                model_dir + '/' + model_name, map_location=torch.device('cpu')))
+        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
     
     model.eval()
     #%%
@@ -197,13 +203,29 @@ def main():
     wandb.log({'MARE (Baseline)': np.mean([x[1] for x in base_reg])})
     #%%
     print("\nSynthetic: Machine Learning Utility in Regression...\n")
+    # The synthetic data discrete columns are already integers (0,1),
+    # so we need to convert them to one-hot encoding to match the training data format
     df_dummy = []
     for d in dataset.discrete:
-        df_dummy.append(pd.get_dummies(syndata_[d], prefix=d))
-    syndata_ = pd.concat([syndata_.drop(columns=dataset.discrete)] + df_dummy, axis=1)
+        # Check unique values to determine if one-hot encoding is needed
+        unique_vals = sorted(syndata_[d].unique())
+        if len(unique_vals) <= 2 and set(unique_vals).issubset({0, 1}):
+            # Binary variable, create proper one-hot encoding
+            dummy = pd.get_dummies(syndata_[d], prefix=d)
+        else:
+            # Multi-class variable, use standard one-hot encoding
+            dummy = pd.get_dummies(syndata_[d], prefix=d)
+        # Ensure dummy variables are integers to avoid mixed types
+        dummy = dummy.astype(int)
+        df_dummy.append(dummy)
+
+    syndata_processed = pd.concat([syndata_[dataset.continuous].copy()] + df_dummy, axis=1)
+    # Ensure all columns are numeric
+    syndata_processed = syndata_processed.astype(float)
+
     reg = regression_eval(
-        syndata_.copy(), test_dataset.test.copy(), dataset.RegTarget, 
-        syndata.mean()[dataset.RegTarget], syndata.std()[dataset.RegTarget])
+        syndata_processed.copy(), test_dataset.test.copy(), dataset.RegTarget,
+        syndata[dataset.RegTarget].mean(), syndata[dataset.RegTarget].std())
     wandb.log({'MARE': np.mean([x[1] for x in reg])})
     #%%
     print("\nBaseline: Machine Learning Utility in Classification...\n")
@@ -213,7 +235,7 @@ def main():
     #%%
     print("\nSynthetic: Machine Learning Utility in Classification...\n")
     clf = classification_eval(
-        syndata_.copy(), test_dataset.test.copy(), dataset.ClfTarget)
+        syndata_processed.copy(), test_dataset.test.copy(), dataset.ClfTarget)
     wandb.log({'F1': np.mean([x[1] for x in clf])})
     #%%
     wandb.run.finish()

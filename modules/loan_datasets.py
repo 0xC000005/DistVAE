@@ -60,21 +60,26 @@ class TabularDataset(Dataset):
         # one-hot encoding
         df_dummy = []
         for d in self.discrete:
-            df_dummy.append(pd.get_dummies(base[d], prefix=d))
+            dummy = pd.get_dummies(base[d], prefix=d)
+            # Convert boolean columns to int to avoid mixed dtypes
+            dummy = dummy.astype(int)
+            df_dummy.append(dummy)
         base_dummy = pd.concat([base.drop(columns=self.discrete)] + df_dummy, axis=1)
+        # Convert all columns to float to avoid dtype incompatibility warnings
+        base_dummy = base_dummy.astype(float)
         
         split_num = 4000
         
         if train:
             self.train_raw = base.iloc[:split_num]
             
-            df = base_dummy.iloc[:split_num] # train
-            
+            df = base_dummy.iloc[:split_num].copy()  # train
+
             self.mean = df[self.continuous].mean(axis=0)
             self.std = df[self.continuous].std(axis=0)
-            
-            df[self.continuous] = df[self.continuous] - self.mean
-            df[self.continuous] /= self.std
+
+            df.loc[:, self.continuous] = df[self.continuous] - self.mean
+            df.loc[:, self.continuous] /= self.std
             
             self.train = df
             self.x_data = df.to_numpy()
@@ -82,14 +87,14 @@ class TabularDataset(Dataset):
             self.train_raw = base.iloc[:split_num]
             self.test_raw = base.iloc[split_num:]
             
-            df_train = base_dummy.iloc[:split_num] # train
-            df = base_dummy.iloc[split_num:] # test
-            
+            df_train = base_dummy.iloc[:split_num]  # train
+            df = base_dummy.iloc[split_num:].copy()  # test
+
             self.mean = df_train[self.continuous].mean(axis=0)
             self.std = df_train[self.continuous].std(axis=0)
-            
-            df[self.continuous] = df[self.continuous] - self.mean
-            df[self.continuous] /= self.std
+
+            df.loc[:, self.continuous] = df[self.continuous] - self.mean
+            df.loc[:, self.continuous] /= self.std
             
             self.test = df
             self.x_data = df.to_numpy()

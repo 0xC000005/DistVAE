@@ -24,43 +24,25 @@ from distvae_standalone import (
     dataframe_from_samples,
 )
 
-def load_sp500_data(approach='cross_sectional'):
+def load_sp500_data():
     """
-    Load prepared S&P 500 datasets
-
-    Args:
-        approach: 'cross_sectional' or 'stock_level'
+    Load prepared S&P 500 cross-sectional dataset for modeling stock correlations
     """
-    print(f"Loading S&P 500 data (approach: {approach})...")
+    print("Loading S&P 500 cross-sectional data...")
 
-    if approach == 'cross_sectional':
-        train_df = pd.read_csv('data/sp500/sp500_cross_sectional_train.csv', index_col=0)
-        test_df = pd.read_csv('data/sp500/sp500_cross_sectional_test.csv', index_col=0)
+    train_df = pd.read_csv('data/sp500/sp500_cross_sectional_train.csv', index_col=0)
+    test_df = pd.read_csv('data/sp500/sp500_cross_sectional_test.csv', index_col=0)
 
-        # Separate continuous (stock returns) and market features
-        with open('data/sp500/datasets_metadata.json', 'r') as f:
-            metadata = json.load(f)
+    # Separate continuous (stock returns) and market features
+    with open('data/sp500/datasets_metadata.json', 'r') as f:
+        metadata = json.load(f)
 
-        stock_cols = metadata['cross_sectional_stocks']
-        market_cols = ['log_return_mean', 'log_return_std', 'volume_log_mean', 'high_low_ratio_mean']
+    stock_cols = metadata['cross_sectional_stocks']
+    market_cols = ['log_return_mean', 'log_return_std', 'volume_log_mean', 'high_low_ratio_mean']
 
-        # All features are continuous for cross-sectional approach
-        continuous = stock_cols + market_cols
-        discrete = []
-
-    else:  # stock_level
-        train_df = pd.read_csv('data/sp500/sp500_stock_level_train.csv')
-        test_df = pd.read_csv('data/sp500/sp500_stock_level_test.csv')
-
-        # Separate continuous and discrete features
-        continuous = [
-            'log_return', 'excess_return', 'high_low_ratio', 'volume_log',
-            'return_mean_5d', 'return_std_5d', 'return_mean_20d', 'return_std_20d',
-            'volume_mean_5d', 'volume_mean_20d', 'log_return_mean', 'log_return_std'
-        ]
-
-        # Sector dummy variables are discrete (but already one-hot encoded)
-        discrete = [col for col in train_df.columns if col.startswith('sector_')]
+    # All features are continuous for cross-sectional approach
+    continuous = stock_cols + market_cols
+    discrete = []
 
     print(f"Train shape: {train_df.shape}, Test shape: {test_df.shape}")
     print(f"Continuous features ({len(continuous)}): {continuous[:5]}{'...' if len(continuous) > 5 else ''}")
@@ -72,42 +54,22 @@ def prepare_data_for_distvae(train_df, continuous, discrete):
     """Prepare data tensors for DistVAE training"""
     print("Preparing data tensors for DistVAE...")
 
-    # For cross-sectional: all columns are continuous (stock returns + market features)
-    # For stock-level: mixed continuous and discrete (sector dummies)
-
-    if len(discrete) == 0:
-        # Cross-sectional approach: all continuous
-        X, categorical_dims, meta = prepare_tabular_data(
-            train_df, continuous, [], standardize=True
-        )
-    else:
-        # Stock-level approach: continuous + discrete
-        # Discrete columns are already one-hot encoded, so we need to handle them carefully
-        df_cont = train_df[continuous].copy()
-        df_disc = train_df[discrete].copy()
-
-        # For discrete columns that are already one-hot, we need to convert back to categorical
-        # Group sector dummy columns back into single categorical
-        sector_names = [col.replace('sector_', '') for col in discrete]
-        sector_values = df_disc.values.argmax(axis=1)
-        df_combined = df_cont.copy()
-        df_combined['sector'] = [sector_names[i] for i in sector_values]
-
-        X, categorical_dims, meta = prepare_tabular_data(
-            df_combined, continuous, ['sector'], standardize=True
-        )
+    # Cross-sectional approach: all columns are continuous (stock returns + market features)
+    X, categorical_dims, meta = prepare_tabular_data(
+        train_df, continuous, [], standardize=True
+    )
 
     print(f"Prepared tensor shape: {X.shape}")
     print(f"Categorical dimensions: {categorical_dims}")
 
     return X, categorical_dims, meta
 
-def train_distvae_on_sp500(approach='cross_sectional', epochs=50, beta=0.5):
-    """Train DistVAE on S&P 500 data"""
-    print(f"=== Training DistVAE on S&P 500 ({approach}) ===")
+def train_distvae_on_sp500(epochs=50, beta=0.5):
+    """Train DistVAE on S&P 500 cross-sectional data for modeling stock correlations"""
+    print("=== Training DistVAE on S&P 500 (Cross-Sectional) ===")
 
     # Load data
-    train_df, test_df, continuous, discrete = load_sp500_data(approach)
+    train_df, test_df, continuous, discrete = load_sp500_data()
 
     # Prepare tensors
     X_tensor, categorical_dims, meta = prepare_data_for_distvae(train_df, continuous, discrete)
@@ -161,7 +123,7 @@ def train_distvae_on_sp500(approach='cross_sectional', epochs=50, beta=0.5):
 
     return model, history, synthetic_df, train_df, test_df, meta
 
-def evaluate_synthetic_quality(synthetic_df, real_df, continuous_cols, approach='cross_sectional'):
+def evaluate_synthetic_quality(synthetic_df, real_df, continuous_cols):
     """Evaluate quality of synthetic samples"""
     print("\n=== Evaluating Synthetic Data Quality ===")
 
@@ -197,14 +159,14 @@ def evaluate_synthetic_quality(synthetic_df, real_df, continuous_cols, approach=
             axes[i].set_ylabel('Density')
 
     plt.tight_layout()
-    save_path = f'data/sp500/distvae_evaluation_{approach}.png'
+    save_path = 'data/sp500/distvae_evaluation_cross_sectional.png'
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
 
     print(f"Distribution comparison plots saved to: {save_path}")
 
-    # Correlation analysis (for cross-sectional approach)
-    if approach == 'cross_sectional' and len(continuous_cols) > 1:
+    # Correlation analysis
+    if len(continuous_cols) > 1:
         print("\nCorrelation Analysis:")
 
         # Select subset of stocks for correlation analysis
@@ -230,26 +192,26 @@ def evaluate_synthetic_quality(synthetic_df, real_df, continuous_cols, approach=
         axes[2].set_title('Absolute Correlation Differences')
 
         plt.tight_layout()
-        plt.savefig(f'data/sp500/correlation_analysis_{approach}.png', dpi=300, bbox_inches='tight')
+        plt.savefig('data/sp500/correlation_analysis_cross_sectional.png', dpi=300, bbox_inches='tight')
         plt.close()
 
-        print(f"Correlation analysis saved to: data/sp500/correlation_analysis_{approach}.png")
+        print("Correlation analysis saved to: data/sp500/correlation_analysis_cross_sectional.png")
 
-def save_model_and_results(model, history, synthetic_df, meta, approach):
+def save_model_and_results(model, history, synthetic_df, meta):
     """Save trained model and results"""
     print("\nSaving model...")
 
     # Save model
-    model_path = f'data/sp500/distvae_model_{approach}.pth'
+    model_path = 'data/sp500/distvae_model_cross_sectional.pth'
     torch.save(model.state_dict(), model_path)
 
     # Save synthetic data
-    synthetic_df.to_csv(f'data/sp500/synthetic_data_{approach}.csv', index=False)
+    synthetic_df.to_csv('data/sp500/synthetic_data_cross_sectional.csv', index=False)
 
     print(f"Model saved to: {model_path}")
-    print(f"Synthetic data saved to: data/sp500/synthetic_data_{approach}.csv")
+    print("Synthetic data saved to: data/sp500/synthetic_data_cross_sectional.csv")
 
-def plot_training_history(history, approach):
+def plot_training_history(history):
     """Plot training history"""
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
@@ -277,10 +239,10 @@ def plot_training_history(history, approach):
     axes[2].set_ylabel('KL Loss')
 
     plt.tight_layout()
-    plt.savefig(f'data/sp500/training_history_{approach}.png', dpi=300, bbox_inches='tight')
+    plt.savefig('data/sp500/training_history_cross_sectional.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-    print(f"Training history plot saved to: data/sp500/training_history_{approach}.png")
+    print("Training history plot saved to: data/sp500/training_history_cross_sectional.png")
 
 def main():
     """Main execution function"""
@@ -294,54 +256,47 @@ def main():
     torch.manual_seed(42)
     np.random.seed(42)
 
-    # Train on both approaches
-    for approach in ['cross_sectional', 'stock_level']:
-        print(f"\n{'='*60}")
-        print(f"Training approach: {approach}")
-        print(f"{'='*60}")
+    # Train cross-sectional approach for stock correlation modeling
+    print(f"\n{'='*60}")
+    print("Training Cross-Sectional DistVAE for Stock Correlations")
+    print(f"{'='*60}")
 
-        try:
-            # Train model
-            model, history, synthetic_df, train_df, test_df, meta = train_distvae_on_sp500(
-                approach=approach, epochs=1000, beta=0.5
-            )
+    try:
+        # Train model
+        model, history, synthetic_df, train_df, test_df, meta = train_distvae_on_sp500(
+            epochs=1000, beta=0.5
+        )
 
-            # Get continuous columns for evaluation
-            if approach == 'cross_sectional':
-                with open('data/sp500/datasets_metadata.json', 'r') as f:
-                    metadata = json.load(f)
-                continuous = metadata['cross_sectional_stocks'] + [
-                    'log_return_mean', 'log_return_std', 'volume_log_mean', 'high_low_ratio_mean'
-                ]
-            else:
-                continuous = [
-                    'log_return', 'excess_return', 'high_low_ratio', 'volume_log',
-                    'return_mean_5d', 'return_std_5d', 'return_mean_20d', 'return_std_20d',
-                    'volume_mean_5d', 'volume_mean_20d', 'log_return_mean', 'log_return_std'
-                ]
+        # Get continuous columns for evaluation
+        with open('data/sp500/datasets_metadata.json', 'r') as f:
+            metadata = json.load(f)
+        continuous = metadata['cross_sectional_stocks'] + [
+            'log_return_mean', 'log_return_std', 'volume_log_mean', 'high_low_ratio_mean'
+        ]
 
-            # Evaluate synthetic data quality
-            evaluate_synthetic_quality(synthetic_df, train_df, continuous, approach)
+        # Evaluate synthetic data quality
+        evaluate_synthetic_quality(synthetic_df, train_df, continuous)
 
-            # Plot training history
-            plot_training_history(history, approach)
+        # Plot training history
+        plot_training_history(history)
 
-            # Save model and results
-            save_model_and_results(model, history, synthetic_df, meta, approach)
+        # Save model and results
+        save_model_and_results(model, history, synthetic_df, meta)
 
-            print(f"\nCompleted training for {approach} approach")
+        print("\nCompleted cross-sectional training")
 
-        except Exception as e:
-            print(f"Error training {approach} approach: {str(e)}")
-            continue
+    except Exception as e:
+        print(f"Error during training: {str(e)}")
+        raise
 
     print(f"\n=== Training Complete ===")
     print(f"End time: {datetime.now()}")
     print("\nResults saved in data/sp500/:")
-    print("- Model files: distvae_model_*.pth")
-    print("- Synthetic data: synthetic_data_*.csv")
-    print("- Evaluation plots: distvae_evaluation_*.png")
-    print("- Training history: training_history_*.png")
+    print("- Model: distvae_model_cross_sectional.pth")
+    print("- Synthetic data: synthetic_data_cross_sectional.csv")
+    print("- Evaluation plots: distvae_evaluation_cross_sectional.png")
+    print("- Training history: training_history_cross_sectional.png")
+    print("- Correlation analysis: correlation_analysis_cross_sectional.png")
 
 if __name__ == "__main__":
     main()
